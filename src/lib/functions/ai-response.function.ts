@@ -6,7 +6,6 @@ import {
   getStreamingContent,
 } from "./common.function";
 import { Message, TYPE_PROVIDER } from "@/types";
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import curl2Json from "@bany/curl-to-json";
@@ -291,11 +290,75 @@ export async function* fetchAIResponse(params: {
       }
     }
 
-    const fetchFunction = url?.includes("http") ? fetch : tauriFetch;
 
+    const isLocalUrl = url?.includes("localhost") || url?.includes("127.0.0.1");
+
+    if (isLocalUrl) {
+      // For local providers (e.g. Ollama), use the Rust backend proxy to avoid
+      // WebView2 CORS restrictions in production builds.
+      let streamComplete = false;
+      let streamError: string | null = null;
+      const streamChunks: string[] = [];
+
+      const unlisten = await listen("local_stream_chunk", (event) => {
+        streamChunks.push(event.payload as string);
+      });
+      const unlistenComplete = await listen("local_stream_complete", () => {
+        streamComplete = true;
+      });
+      const unlistenError = await listen("local_stream_error", (event) => {
+        streamError = event.payload as string;
+        streamComplete = true;
+      });
+
+      try {
+        if (signal?.aborted) return;
+
+        // Fire-and-forget invoke — it streams events back while running
+        invoke("local_stream_request", {
+          url,
+          method: curlJson.method || "POST",
+          headers,
+          body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
+        }).catch((err: unknown) => {
+          streamError =
+            err instanceof Error ? err.message : String(err);
+          streamComplete = true;
+        });
+
+        let lastIndex = 0;
+        while (!streamComplete) {
+          if (signal?.aborted) return;
+          await new Promise((r) => setTimeout(r, 20));
+          if (signal?.aborted) return;
+          for (let i = lastIndex; i < streamChunks.length; i++) {
+            yield streamChunks[i];
+          }
+          lastIndex = streamChunks.length;
+        }
+
+        if (signal?.aborted) return;
+
+        // Yield any remaining chunks
+        for (let i = lastIndex; i < streamChunks.length; i++) {
+          yield streamChunks[i];
+        }
+
+        if (streamError) {
+          yield `API request failed: ${streamError}`;
+        }
+      } finally {
+        unlisten();
+        unlistenComplete();
+        unlistenError();
+      }
+      return;
+    }
+
+    // Remote provider — use native browser fetch (supports ReadableStream streaming)
     let response;
     try {
-      response = await fetchFunction(url, {
+      response = await fetch(url, {
         method: curlJson.method || "POST",
         headers,
         body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),

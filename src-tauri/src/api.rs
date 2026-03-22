@@ -1165,3 +1165,110 @@ pub async fn get_activity(app: AppHandle) -> Result<serde_json::Value, String> {
         .await
         .map_err(|e| format!("Failed to parse activity response: {}", e))
 }
+
+/// Proxies a streaming HTTP request to a local endpoint (e.g. Ollama at localhost)
+/// using reqwest so it bypasses WebView2 CORS restrictions in production Tauri builds.
+/// Chunks are emitted to the frontend as Tauri events:
+///   - "local_stream_chunk"    → payload: String (a content delta)
+///   - "local_stream_complete" → payload: null
+///   - "local_stream_error"   → payload: String (error message)
+#[tauri::command]
+pub async fn local_stream_request(
+    app: AppHandle,
+    url: String,
+    method: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+
+    let mut req = match method.to_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        _ => client.post(&url),
+    };
+
+    // Add headers
+    for (key, value) in &headers {
+        req = req.header(key.as_str(), value.as_str());
+    }
+
+    // Add body
+    if let Some(body_str) = body {
+        req = req.body(body_str);
+    }
+
+    let response = req.send().await.map_err(|e| {
+        let msg = format!("Network error: {}", e);
+        let _ = app.emit("local_stream_error", &msg);
+        msg
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        let msg = format!("HTTP {}: {}", status, error_text);
+        let _ = app.emit("local_stream_error", &msg);
+        return Err(msg);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                let chunk_str = String::from_utf8_lossy(&bytes);
+                buffer.push_str(&chunk_str);
+
+                // Process complete lines
+                let lines: Vec<&str> = buffer.split('\n').collect();
+                let incomplete_line = lines.last().unwrap_or(&"").to_string();
+
+                for line in &lines[..lines.len() - 1] {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("data: ") {
+                        let json_str = trimmed.strip_prefix("data: ").unwrap_or("");
+                        if json_str == "[DONE]" {
+                            break;
+                        }
+                        if !json_str.is_empty() {
+                            if let Ok(parsed) =
+                                serde_json::from_str::<serde_json::Value>(json_str)
+                            {
+                                // OpenAI-compatible streaming: choices[0].delta.content
+                                let content = parsed
+                                    .get("choices")
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|c| c.get("delta"))
+                                    .and_then(|d| d.get("content"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if !content.is_empty() {
+                                    let _ = app.emit("local_stream_chunk", content);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                buffer = incomplete_line;
+            }
+            Err(e) => {
+                let msg = format!("Stream read error: {}", e);
+                let _ = app.emit("local_stream_error", &msg);
+                return Err(msg);
+            }
+        }
+    }
+
+    let _ = app.emit("local_stream_complete", ());
+    Ok(())
+}
+

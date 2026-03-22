@@ -115,6 +115,7 @@ pub fn run() {
             speaker::get_audio_sample_rate,
             speaker::get_input_devices,
             speaker::get_output_devices,
+            api::local_stream_request,
         ])
         .setup(|app| {
             // Setup main window positioning
