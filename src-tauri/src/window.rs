@@ -163,6 +163,7 @@ pub fn create_dashboard_window<R: Runtime>(
         .hidden_title(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .content_protected(true)
+        .skip_taskbar(true)
         .visible(true)
         .traffic_light_position(LogicalPosition::new(14.0, 18.0));
 
@@ -174,6 +175,7 @@ pub fn create_dashboard_window<R: Runtime>(
         .inner_size(800.0, 600.0)
         .min_inner_size(800.0, 600.0)
         .content_protected(true)
+        .skip_taskbar(true)
         .visible(false);
 
     let window = base_builder.build()?;
