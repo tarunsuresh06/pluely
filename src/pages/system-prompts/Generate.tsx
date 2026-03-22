@@ -3,12 +3,11 @@ import {
   PopoverContent,
   PopoverTrigger,
   Button,
-  GetLicense,
   Textarea,
 } from "@/components";
 import { SparklesIcon } from "lucide-react";
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { fetchAIResponse } from "@/lib/functions/ai-response.function";
 import { useApp } from "@/contexts";
 
 interface GenerateSystemPromptProps {
@@ -23,7 +22,7 @@ interface SystemPromptResponse {
 export const GenerateSystemPrompt = ({
   onGenerate,
 }: GenerateSystemPromptProps) => {
-  const { hasActiveLicense } = useApp();
+  const { allAiProviders, selectedAIProvider } = useApp();
   const [userPrompt, setUserPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,21 +34,45 @@ export const GenerateSystemPrompt = ({
       return;
     }
 
+    const activeProvider = allAiProviders.find(
+      (p) => p.id === selectedAIProvider.provider
+    );
+    if (!activeProvider) {
+      setError("Please configure an AI provider in Dev Space first.");
+      return;
+    }
+
     try {
       setIsGenerating(true);
       setError(null);
 
-      const response = await invoke<SystemPromptResponse>(
-        "create_system_prompt",
-        {
-          userPrompt: userPrompt.trim(),
-        }
-      );
+      const systemMessage = `You are an expert at creating system prompts. Generate a system prompt name and content based on the user's description. You must respond ONLY with valid JSON in the following format, with no markdown formatting or other text: {"prompt_name": "A short, descriptive name", "system_prompt": "The detailed system prompt"}`;
+      
+      const abortController = new AbortController();
+      let fullResponse = "";
+
+      const generator = fetchAIResponse({
+        provider: activeProvider,
+        selectedProvider: selectedAIProvider,
+        systemPrompt: systemMessage,
+        userMessage: userPrompt.trim(),
+        signal: abortController.signal,
+      });
+
+      for await (const chunk of generator) {
+        fullResponse += chunk;
+      }
+
+      // Clean up the response if it contains markdown code blocks
+      const cleanJsonStr = fullResponse.replace(/```json\n|\n```|```/g, "").trim();
+      const response = JSON.parse(cleanJsonStr) as SystemPromptResponse;
 
       if (response.system_prompt && response.prompt_name) {
         onGenerate(response.system_prompt, response.prompt_name);
         setIsOpen(false);
         setUserPrompt("");
+      } else {
+        setError("Invalid response format from AI");
       }
     } catch (err) {
       const errorMessage =
@@ -100,37 +123,23 @@ export const GenerateSystemPrompt = ({
 
           {error && <p className="text-xs text-destructive">{error}</p>}
 
-          {hasActiveLicense ? (
-            <Button
-              className="w-full"
-              onClick={handleGenerate}
-              disabled={!userPrompt.trim() || isGenerating}
-            >
-              {isGenerating ? (
-                <>
-                  <SparklesIcon className="h-4 w-4 animate-pulse" />
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <SparklesIcon className="h-4 w-4" />
-                  Generate
-                </>
-              )}
-            </Button>
-          ) : (
-            <div className="w-full flex flex-col gap-3">
-              <p className="text-sm font-medium text-muted-foreground">
-                You need an active license to use this feature. Click the button
-                below to get a license.
-              </p>
-              <GetLicense
-                buttonText="Get License"
-                buttonClassName="w-full"
-                setState={setIsOpen}
-              />
-            </div>
-          )}
+          <Button
+            className="w-full"
+            onClick={handleGenerate}
+            disabled={!userPrompt.trim() || isGenerating}
+          >
+            {isGenerating ? (
+              <>
+                <SparklesIcon className="h-4 w-4 animate-pulse" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <SparklesIcon className="h-4 w-4" />
+                Generate
+              </>
+            )}
+          </Button>
         </div>
       </PopoverContent>
     </Popover>

@@ -1,66 +1,52 @@
-import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { GetLicense } from "@/components";
-import { PluelyApiSetup, Usage } from "./components";
 import { PageLayout } from "@/layouts";
 import { useApp } from "@/contexts";
 
 const Dashboard = () => {
-  const { hasActiveLicense } = useApp();
-  const [activity, setActivity] = useState<any>(null);
-  const [loadingActivity, setLoadingActivity] = useState(false);
+  const { allAiProviders, selectedAIProvider, allSttProviders, selectedSttProvider } = useApp();
 
-  const fetchActivity = useCallback(async () => {
-    if (!hasActiveLicense) {
-      setActivity({ data: [], total_tokens_used: 0 });
-      return;
-    }
-    setLoadingActivity(true);
-    try {
-      const response = await invoke("get_activity");
-      const responseData: any = response;
-      if (responseData && responseData.success) {
-        setActivity(responseData);
-      } else {
-        setActivity({ data: [], total_tokens_used: 0 });
-      }
-    } catch (error) {
-      setActivity({ data: [], total_tokens_used: 0 });
-    } finally {
-      setLoadingActivity(false);
-    }
-  }, [hasActiveLicense]);
-
-  useEffect(() => {
-    if (hasActiveLicense) {
-      fetchActivity();
-    } else {
-      setActivity(null);
-    }
-  }, [fetchActivity, hasActiveLicense]);
-
-  const activityData =
-    activity && Array.isArray(activity.data) ? activity.data : [];
-  const totalTokens =
-    activity && typeof activity.total_tokens_used === "number"
-      ? activity.total_tokens_used
-      : 0;
+  const activeAi = allAiProviders.find(p => p.id === selectedAIProvider.provider);
+  const activeStt = allSttProviders.find(p => p.id === selectedSttProvider.provider);
 
   return (
     <PageLayout
       title="Dashboard"
-      description="Pluely license to unlock faster responses, quicker support and premium features."
-      rightSlot={!hasActiveLicense ? <GetLicense /> : null}
+      description="Manage your configured AI and STT providers."
     >
-      {/* Pluely API Setup */}
-      <PluelyApiSetup />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+        {/* AI Provider Status */}
+        <div className="flex flex-col gap-2 p-4 rounded-xl border border-border bg-card">
+          <h3 className="text-sm font-semibold text-card-foreground">Active AI Provider</h3>
+          {activeAi ? (
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-bold">{activeAi.id}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Model: {selectedAIProvider.variables?.MODEL || "Default"}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No AI provider configured.</p>
+          )}
+        </div>
 
-      <Usage
-        loading={loadingActivity}
-        onRefresh={fetchActivity}
-        data={activityData}
-        totalTokens={totalTokens}
-      />
+        {/* STT Provider Status */}
+        <div className="flex flex-col gap-2 p-4 rounded-xl border border-border bg-card">
+          <h3 className="text-sm font-semibold text-card-foreground">Active STT Provider</h3>
+          {activeStt ? (
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-bold">{activeStt.id}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Model: {selectedSttProvider.variables?.MODEL || "Default"}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No STT provider configured.</p>
+          )}
+        </div>
+      </div>
     </PageLayout>
   );
 };
